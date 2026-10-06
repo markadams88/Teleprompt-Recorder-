@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Teleprompter</title>
+  <meta name="description" content="Teleprompter that records you to camera while your script scrolls.">
+  <meta name="theme-color" content="#0e1014">
+  <meta name="color-scheme" content="dark">
+
+  <!-- Home Screen app (iOS) -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Teleprompter">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ============ 1. Script screen ============ -->
+  <section id="screen-script" class="screen screen-script">
+    <header class="script-header">
+      <h1>Teleprompter</h1>
+      <span id="save-status" class="save-status" aria-live="polite"></span>
+    </header>
+
+    <textarea id="script-input" class="script-input"
+              placeholder="Paste or type your script here…"
+              autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
+              aria-label="Script"></textarea>
+
+    <footer class="script-footer">
+      <p id="word-count" class="word-count"></p>
+      <div class="script-actions">
+        <button id="clear-btn" class="btn btn-ghost" type="button">Clear</button>
+        <button id="start-btn" class="btn btn-primary btn-large" type="button">Start</button>
+      </div>
+    </footer>
+  </section>
+
+  <!-- ============ 2. Recording screen ============ -->
+  <section id="screen-record" class="screen screen-record" hidden>
+    <div id="stage" class="stage">
+      <video id="camera" class="camera" autoplay playsinline muted></video>
+
+      <div id="band" class="band">
+        <div id="script-text" class="script-text"></div>
+        <div id="reading-line" class="reading-line" aria-hidden="true"></div>
+      </div>
+
+      <!-- Always visible -->
+      <div id="rec-indicator" class="rec-indicator" hidden>
+        <span class="rec-dot"></span><span id="rec-time">0:00</span>
+      </div>
+      <div id="capture-info" class="capture-info">Starting camera…</div>
+
+      <div id="countdown" class="countdown" hidden><span id="countdown-num">3</span></div>
+
+      <div id="camera-msg" class="camera-msg" hidden>
+        <div class="camera-msg-card">
+          <h2 id="camera-msg-title">Camera unavailable</h2>
+          <p id="camera-msg-text"></p>
+          <button id="camera-retry" class="btn btn-primary" type="button">Try again</button>
+        </div>
+      </div>
+
+      <!-- Auto-hiding controls -->
+      <div id="topbar" class="topbar chrome">
+        <button id="back-btn" class="pill" type="button" aria-label="Back to script">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+          Script
+        </button>
+        <button id="countdown-btn" class="pill" type="button" aria-pressed="true">3-2-1: On</button>
+      </div>
+
+      <div id="controls" class="controls chrome">
+        <div class="sliders">
+          <label class="slider">
+            <span class="slider-label">Text size <output id="size-value">44</output></span>
+            <input id="size-slider" type="range" min="24" max="96" step="2" value="44">
+          </label>
+          <label class="slider">
+            <span class="slider-label">Speed <output id="speed-value">45</output></span>
+            <input id="speed-slider" type="range" min="1" max="100" step="1" value="45">
+          </label>
+        </div>
+
+        <div class="buttons">
+          <button id="reset-btn" class="ctl" type="button" aria-label="Reset scroll to top">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14M12 20V8M7 13l5-5 5 5"/></svg>
+            <span>Top</span>
+          </button>
+          <button id="play-btn" class="ctl" type="button" aria-label="Play scroll">
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M8 5v14l11-7z"/></svg>
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path class="fill" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+            <span id="play-label">Play</span>
+          </button>
+          <button id="record-btn" class="record-btn" type="button" aria-label="Start recording">
+            <span class="record-inner"></span>
+          </button>
+          <button id="flip-btn" class="ctl" type="button" aria-label="Switch between front and back camera">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9a8 8 0 0 1 14-3l2 2M20 4v4h-4M20 15a8 8 0 0 1-14 3l-2-2M4 20v-4h4"/></svg>
+            <span>Flip</span>
+          </button>
+          <button id="mirror-btn" class="ctl" type="button" aria-pressed="true" aria-label="Mirror preview">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M9 7L3 17h6zM15 7l6 10h-6z"/></svg>
+            <span>Mirror</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. Preview screen ============ -->
+  <section id="screen-preview" class="screen screen-preview" hidden>
+    <div class="preview-video-wrap">
+      <video id="clip" class="clip" controls playsinline preload="metadata"></video>
+    </div>
+    <div class="preview-panel">
+      <p id="clip-info" class="clip-info"></p>
+      <button id="save-btn" class="btn btn-primary btn-large" type="button">Save to Photos</button>
+      <a id="download-link" class="btn btn-primary btn-large" hidden>Download video</a>
+      <p id="share-status" class="share-status" aria-live="polite"></p>
+      <div class="preview-actions">
+        <button id="again-btn" class="btn btn-secondary" type="button">Record again</button>
+        <button id="discard-btn" class="btn btn-danger" type="button">Discard</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
