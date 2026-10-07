@@ -418,7 +418,7 @@ input[type="range"]::-moz-range-thumb { width: 30px; height: 30px; border: 0; bo
   background: var(--panel);
 }
 .camera-msg-card h2 { margin: 0 0 8px; font-size: 20px; }
-.camera-msg-card p { margin: 0 0 16px; color: #d0d4db; font-size: 15px; line-height: 1.5; white-space: pre-line; }
+.camera-msg-card p { margin: 0 0 16px; color: #d0d4db; font-size: 15px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
 .camera-msg-card .btn { width: 100%; }
 
 /* Topbar must stay usable above the camera message */

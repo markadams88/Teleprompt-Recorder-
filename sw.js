@@ -1,6 +1,6 @@
 /* Teleprompter service worker: fetches fresh files when online and falls back
    to the cache so the app opens offline. Bump VERSION on release. */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `teleprompter-${VERSION}`;
 const ASSETS = [
   './',

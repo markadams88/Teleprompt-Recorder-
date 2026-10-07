@@ -42,6 +42,15 @@
 
   function pad2(n) { return String(n).padStart(2, '0'); }
 
+  // Short log of recorder events, shown if a recording fails, to help troubleshoot.
+  const recLog = [];
+  let recLogStart = 0;
+  function logRec(msg) {
+    const t = recLogStart ? ((performance.now() - recLogStart) / 1000).toFixed(1) : '0.0';
+    recLog.push(`${t}s ${msg}`);
+    if (recLog.length > 40) recLog.shift();
+  }
+
   function formatTime(ms) {
     const total = Math.floor(ms / 1000);
     const h = Math.floor(total / 3600);
@@ -522,6 +531,7 @@
     stream.getTracks().forEach((t) => {
       t.addEventListener('ended', () => {
         if (state.stream !== stream || state.screen !== 'record') return;
+        logRec(`${t.kind} track ended`);
         if (state.recording) stopRecording();
         showCameraMessage('Camera stopped',
           'The camera or microphone was interrupted (perhaps by a call or another app). Tap below to start it again.', true);
@@ -623,8 +633,8 @@
   function pickMimeType() {
     if (!window.MediaRecorder) return null;
     const types = [
+      'video/mp4;codecs=avc1,mp4a.40.2',   // H.264 video + AAC audio, stated explicitly
       'video/mp4;codecs=avc1',
-      'video/mp4;codecs=avc1,mp4a.40.2',
       'video/mp4',
       'video/webm;codecs=vp9,opus',   // desktop fallbacks, for testing only
       'video/webm'
@@ -702,10 +712,18 @@
     };
     if (mimeType) options.mimeType = mimeType;
 
+    recLog.length = 0;
+    recLogStart = performance.now();
+    const ua = navigator.userAgent.match(/OS [\d_]+/);
+    logRec(`${ua ? ua[0].replace(/_/g, '.') : 'browser'}${navigator.standalone ? ' (Home Screen)' : ''}`);
+    logRec(`stream ${stream.getVideoTracks().length}v ${stream.getAudioTracks().length}a, ${captureInfo.textContent}`);
+    logRec(`try ${mimeType || 'default'} @ ${options.videoBitsPerSecond / 1e6} Mbps`);
+
     let rec;
     try {
       rec = new MediaRecorder(stream, options);
     } catch (e) {
+      logRec(`create failed: ${e.name}; retrying without bitrates`);
       try {
         rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       } catch (e2) {
@@ -719,22 +737,29 @@
     state.chunks = [];
 
     rec.addEventListener('dataavailable', (e) => {
+      logRec(`data ${e.data ? e.data.size : 0} bytes`);
       if (state.recorder === rec && e.data && e.data.size) state.chunks.push(e.data);
     });
-    rec.addEventListener('stop', () => onRecorderStop(rec));
+    rec.addEventListener('stop', () => { logRec('stop event'); onRecorderStop(rec); });
     rec.addEventListener('error', (e) => {
-      toast(`Recording error: ${(e.error && e.error.name) || 'unknown'}`, 5000);
+      const err = e.error || {};
+      logRec(`error ${err.name || ''} ${err.message || ''}`);
+      toast(`Recording error: ${err.name || 'unknown'}`, 5000);
     });
     rec.addEventListener('start', () => {
+      logRec(`start event, mimeType ${rec.mimeType || '(none)'}`);
       state.recStartedAt = performance.now();
       setPlaying(true);   // scroll starts as the recording starts
     });
 
+    logRec(`created, state ${rec.state}`);
     try {
       // Collect the video in 1-second pieces, so the clip survives even if
       // iOS never delivers the final 'stop' event (e.g. after backgrounding).
       rec.start(1000);
+      logRec(`start() called, state ${rec.state}`);
     } catch (e) {
+      logRec(`start() failed: ${e.name} ${e.message}`);
       toast('Recording couldn’t start on this device.', 5000);
       state.recorder = null;
       return;
@@ -771,13 +796,14 @@
     if (!state.recording || !rec) return;
     endRecordingUI();
     captureInfo.textContent = 'Finishing…';
+    logRec(`stop pressed, state ${rec.state}, ${state.chunks.length} pieces so far`);
     try {
       if (rec.state !== 'inactive') rec.stop();
-    } catch (e) { /* finished below */ }
+    } catch (e) { logRec(`stop() failed: ${e.name}`); }
     if (rec.state === 'inactive' && state.recorder !== rec) return;
     // Safari sometimes never fires 'stop'. Don't wait for it for ever: use what we have.
     clearTimeout(state.finishTimer);
-    state.finishTimer = setTimeout(() => onRecorderStop(rec), 3000);
+    state.finishTimer = setTimeout(() => { logRec('no stop event after 3 s'); onRecorderStop(rec); }, 3000);
   }
 
   function onRecorderStop(rec) {
@@ -789,8 +815,10 @@
     const chunks = state.chunks;
     state.chunks = [];
     if (!chunks.length) {
-      toast('The recording was interrupted before any video was saved. Please try again.', 5000);
       updateCaptureInfo();
+      showCameraMessage('Recording failed',
+        'No video was captured. Please try again. If it keeps happening, take a screenshot of this message.\n\n' +
+        recLog.join('\n'), true);
       return;
     }
     const type = (state.mimeType || 'video/mp4').split(';')[0];
@@ -909,6 +937,7 @@
       cancelCountdown();
       setPlaying(false);
     } else if (state.screen === 'record') {
+      logRec('back from background');
       // A clip that was being finished when the app went to the background: show it now.
       if (state.recorder && !state.recording) { onRecorderStop(state.recorder); return; }
       requestWakeLock();
