@@ -416,7 +416,8 @@
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
-    sampleRate: { ideal: 48000 }
+    sampleRate: { ideal: 48000 },
+    channelCount: { ideal: 2 }   // stereo if the microphone offers it
   };
 
   function initialVideoConstraints(facing) {
@@ -463,10 +464,11 @@
     const capShort = Math.min((caps.width && caps.width.max) || 0, (caps.height && caps.height.max) || 0);
     const capFps = (caps.frameRate && caps.frameRate.max) || 0;
 
-    const ladder = facing === 'environment'
-      ? [[3840, 2160, 60], [3840, 2160, 30], [1920, 1080, 60], [1920, 1080, 30]]
-      : [[1920, 1080, 30]];
+    // Resolution first, at 30 fps: for talking to camera, 30 fps lets each frame gather
+    // more light (less noise indoors) and matches the Camera app's default.
+    const ladder = [[3840, 2160, 30], [1920, 1080, 30]];
 
+    await setAutoModes(track, caps);
     for (const [w, h, fps] of ladder) {
       if (capLong && (capLong < w || capShort < h)) continue;   // sensor mode not offered
       if (fps > 30 && capFps && capFps < fps) continue;
@@ -481,6 +483,16 @@
       } catch (e) { /* try the next step down */ }
       if (meets(track.getSettings(), w, fps)) return;
     }
+  }
+
+  // Continuous auto focus, exposure and white balance, where Safari exposes them.
+  async function setAutoModes(track, caps) {
+    const modes = {};
+    ['focusMode', 'exposureMode', 'whiteBalanceMode'].forEach((key) => {
+      if (Array.isArray(caps[key]) && caps[key].includes('continuous')) modes[key] = 'continuous';
+    });
+    if (!Object.keys(modes).length) return;
+    try { await track.applyConstraints({ advanced: [modes] }); } catch (e) { /* not supported */ }
   }
 
   function meets(s, w, fps) {
@@ -553,6 +565,8 @@
     const rate = audio && audio.getSettings().sampleRate;
     let txt = `${w}×${h} · ${fps} fps`;
     if (rate) txt += ` · ${(rate / 1000).toFixed(rate % 1000 ? 1 : 0)} kHz`;
+    const ch = audio && audio.getSettings().channelCount;
+    if (ch) txt += ch > 1 ? ' stereo' : ' mono';
     if (state.recording && state.recorder) {
       const vb = state.recorder.videoBitsPerSecond;
       txt += ` · ${codecLabel(state.mimeType)}${vb ? ` ${Math.round(vb / 1e6)} Mbps` : ''}`;
@@ -707,8 +721,9 @@
     const s = stream.getVideoTracks()[0].getSettings();
     const long = Math.max(video.videoWidth, video.videoHeight, s.width || 0, s.height || 0);
     const options = {
-      videoBitsPerSecond: long >= 3000 ? 16000000 : 10000000,
-      audioBitsPerSecond: 192000
+      // Close to the iPhone Camera app's own H.264 rates (about 45 Mbps 4K, 17 Mbps 1080p).
+      videoBitsPerSecond: long >= 3000 ? 45000000 : 17000000,
+      audioBitsPerSecond: 256000
     };
     if (mimeType) options.mimeType = mimeType;
 
