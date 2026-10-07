@@ -1,6 +1,6 @@
-/* Teleprompter service worker: serves the app from cache so it opens offline,
-   and refreshes the cache in the background when online. Bump VERSION on release. */
-const VERSION = 'v1';
+/* Teleprompter service worker: fetches fresh files when online and falls back
+   to the cache so the app opens offline. Bump VERSION on release. */
+const VERSION = 'v2';
 const CACHE = `teleprompter-${VERSION}`;
 const ASSETS = [
   './',
@@ -29,20 +29,17 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
 
-  // Stale-while-revalidate: answer from cache instantly, update it from the network.
-  const network = fetch(req).then((res) => {
-    if (res && res.ok && res.type === 'basic') {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy));
-    }
-    return res;
-  });
-
+  // Network first, so updates arrive straight away; the cache keeps it working offline.
   event.respondWith(
-    caches.match(req, { ignoreSearch: true }).then((cached) => {
-      if (cached) return cached;
-      return network.catch(() => (req.mode === 'navigate' ? caches.match('./index.html') : Response.error()));
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok && res.type === 'basic') {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req, { ignoreSearch: true })
+        .then((cached) => cached || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error())))
   );
-  event.waitUntil(network.catch(() => {}));
 });

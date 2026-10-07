@@ -135,7 +135,8 @@
     saved: false,
     // misc
     wakeLock: null,
-    hideTimer: 0
+    hideTimer: 0,
+    finishTimer: 0
   };
 
   function showScreen(name) {
@@ -718,9 +719,9 @@
     state.chunks = [];
 
     rec.addEventListener('dataavailable', (e) => {
-      if (e.data && e.data.size) state.chunks.push(e.data);
+      if (state.recorder === rec && e.data && e.data.size) state.chunks.push(e.data);
     });
-    rec.addEventListener('stop', onRecorderStop);
+    rec.addEventListener('stop', () => onRecorderStop(rec));
     rec.addEventListener('error', (e) => {
       toast(`Recording error: ${(e.error && e.error.name) || 'unknown'}`, 5000);
     });
@@ -730,8 +731,9 @@
     });
 
     try {
-      // No timeslice: Safari writes one clean MP4 when stopped.
-      rec.start();
+      // Collect the video in 1-second pieces, so the clip survives even if
+      // iOS never delivers the final 'stop' event (e.g. after backgrounding).
+      rec.start(1000);
     } catch (e) {
       toast('Recording couldn’t start on this device.', 5000);
       state.recorder = null;
@@ -771,22 +773,23 @@
     captureInfo.textContent = 'Finishing…';
     try {
       if (rec.state !== 'inactive') rec.stop();
-      else onRecorderStop();
-    } catch (e) {
-      onRecorderStop();
-    }
+    } catch (e) { /* finished below */ }
+    if (rec.state === 'inactive' && state.recorder !== rec) return;
+    // Safari sometimes never fires 'stop'. Don't wait for it for ever: use what we have.
+    clearTimeout(state.finishTimer);
+    state.finishTimer = setTimeout(() => onRecorderStop(rec), 3000);
   }
 
-  function onRecorderStop() {
-    const rec = state.recorder;
-    if (!rec) return;
+  function onRecorderStop(rec) {
+    if (!rec || state.recorder !== rec) return;   // already finished, or an old recorder
+    clearTimeout(state.finishTimer);
     state.recorder = null;
     if (state.recording) endRecordingUI(); // stopped by the system (e.g. camera interrupted)
 
     const chunks = state.chunks;
     state.chunks = [];
     if (!chunks.length) {
-      toast('Nothing was recorded. Please try again.');
+      toast('The recording was interrupted before any video was saved. Please try again.', 5000);
       updateCaptureInfo();
       return;
     }
@@ -810,6 +813,7 @@
     stopStream();
     cancelCountdown();
     releaseWakeLock();
+    hideCameraMessage();
 
     const name = clipName(state.recStartDate, type);
     state.clipFile = new File([blob], name, { type, lastModified: Date.now() });
@@ -905,6 +909,8 @@
       cancelCountdown();
       setPlaying(false);
     } else if (state.screen === 'record') {
+      // A clip that was being finished when the app went to the background: show it now.
+      if (state.recorder && !state.recording) { onRecorderStop(state.recorder); return; }
       requestWakeLock();
       const live = state.stream && state.stream.getTracks().every((t) => t.readyState === 'live');
       if (state.stream && !live) {
