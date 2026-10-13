@@ -14,7 +14,7 @@ Plain HTML, CSS and JavaScript with no build step.
   optional 3-2-1 countdown. Controls hide after 3 seconds; tap to show them again.
   Tap the text to pause or play; drag the text to move it by hand.
 - Records the raw camera stream (no text in the video) as MP4/H.264 where supported,
-  at 16 Mbps for 4K, 12 Mbps for 1080p and 8 Mbps for 720p (sized for takes of up to 20 minutes), with 256 kbps audio
+  at 16 Mbps for 4K, 12 Mbps for 1080p and 8 Mbps for 720p (sized for takes of up to 20 minutes), with 192 kbps audio
   and voice processing turned off. Tries 4K at 30 fps on either camera, then 1080p.
 - Shows the actual capture resolution and frame rate in the top-right corner.
 - On a laptop: keyboard shortcuts (Space play/pause, R record/stop, ↑ ↓ speed, + − text size, Home back to top),

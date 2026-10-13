@@ -26,7 +26,8 @@
     speed: 'tp.speed',
     countdown: 'tp.countdown',
     camera: 'tp.cameraId',
-    mic: 'tp.micId'
+    mic: 'tp.micId',
+    recorder: 'tp.recorderFormat'
   };
 
   const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
@@ -139,6 +140,9 @@
     countdown: store.get(KEYS.countdown, true),
     // recording
     recorder: null,
+    recConfigs: [],
+    recConfigIdx: 0,
+    recConfigStartedAt: 0,
     chunks: [],
     mimeType: '',
     recording: false,
@@ -817,84 +821,147 @@
     updateCameraButtons();
   }
 
+  // Recording formats to try, best first. If one fails in the first few seconds
+  // (some laptops' encoders reject certain settings), the next is used automatically.
+  function recorderConfigs(stream) {
+    const s = stream.getVideoTracks()[0].getSettings();
+    const long = Math.max(video.videoWidth, video.videoHeight, s.width || 0, s.height || 0);
+    // Sized so a 20-minute take stays manageable (the whole clip is held in memory
+    // until saved): 4K ≈ 2.4 GB, 1080p ≈ 1.8 GB, 720p ≈ 1.2 GB per 20 minutes.
+    const vbps = long >= 3000 ? 16000000 : long >= 1900 ? 12000000 : 8000000;
+    const supported = (t) => typeof MediaRecorder.isTypeSupported !== 'function' || MediaRecorder.isTypeSupported(t);
+    const list = [];
+    const add = (cfg) => {
+      cfg.key = `${cfg.mimeType || 'default'}|${cfg.videoBitsPerSecond || 0}|${cfg.audioBitsPerSecond || 0}`;
+      if (!list.some((c) => c.key === cfg.key)) list.push(cfg);
+    };
+
+    const mp4 = pickMimeType();
+    // 192 kbps is the highest AAC rate every platform encoder accepts (Windows tops out there).
+    if (mp4) {
+      add({ mimeType: mp4, videoBitsPerSecond: vbps, audioBitsPerSecond: 192000 });
+      add({ mimeType: mp4, videoBitsPerSecond: vbps, audioBitsPerSecond: 128000 });
+      add({ mimeType: mp4, videoBitsPerSecond: vbps });   // audio at the encoder's own default
+    }
+    if (!IS_SAFARI) {
+      const webm = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(supported);
+      if (webm) add({ mimeType: webm, videoBitsPerSecond: vbps, audioBitsPerSecond: 128000 });
+    }
+    if (mp4) add({ mimeType: mp4 });
+    add({});   // whatever the browser likes
+
+    // Start with the format that worked last time on this device.
+    const good = store.get(KEYS.recorder, '');
+    const i = list.findIndex((c) => c.key === good);
+    if (i > 0) list.unshift(list.splice(i, 1)[0]);
+    return list;
+  }
+
+  function describeConfig(c) {
+    const v = c.videoBitsPerSecond ? `${c.videoBitsPerSecond / 1e6} Mbps` : 'default video rate';
+    const a = c.audioBitsPerSecond ? `${c.audioBitsPerSecond / 1000} kbps` : 'default audio rate';
+    return `${c.mimeType || 'browser default'} @ ${v}, ${a}`;
+  }
+
+  // Creates and starts a recorder from state.recConfigIdx onwards. Returns true on success.
+  function launchRecorder() {
+    const prevRecorder = state.recorder;
+    const prevChunks = state.chunks;
+    while (state.recConfigIdx < state.recConfigs.length) {
+      const cfg = state.recConfigs[state.recConfigIdx];
+      logRec(`try ${describeConfig(cfg)}`);
+      let rec;
+      try {
+        const opts = Object.assign({}, cfg);
+        delete opts.key;
+        rec = Object.keys(opts).length ? new MediaRecorder(state.stream, opts) : new MediaRecorder(state.stream);
+      } catch (e) {
+        logRec(`create failed: ${e.name} ${e.message || ''}`);
+        state.recConfigIdx++;
+        continue;
+      }
+
+      rec.addEventListener('dataavailable', (e) => {
+        if (state.recorder === rec && e.data && e.data.size) state.chunks.push(e.data);
+      });
+      rec.addEventListener('stop', () => { logRec('stop event'); onRecorderStop(rec); });
+      rec.addEventListener('error', (e) => {
+        const err = e.error || {};
+        logRec(`error ${err.name || ''} ${err.message || ''}`);
+        if (state.recorder === rec && tryNextRecorder('recorder error')) return;
+        if (state.recorder === rec) toast(`Recording error: ${err.name || 'unknown'}`, 5000);
+      });
+      rec.addEventListener('start', () => {
+        if (state.recorder !== rec) return;
+        logRec(`start event, mimeType ${rec.mimeType || '(none)'}`);
+        if (rec.mimeType) state.mimeType = rec.mimeType;
+        updateCaptureInfo();
+        state.recStartedAt = performance.now();
+        setPlaying(true);   // scroll starts as the recording starts
+      });
+
+      state.recorder = rec;
+      state.chunks = [];
+      state.mimeType = rec.mimeType || cfg.mimeType || 'video/mp4';
+      try {
+        // Safari: one complete MP4, written when stopped. Elsewhere: 1-second pieces, so nothing is lost.
+        if (IS_SAFARI) rec.start(); else rec.start(1000);
+        state.recConfigStartedAt = performance.now();
+        logRec(`started, state ${rec.state}`);
+        return true;
+      } catch (e) {
+        logRec(`start() failed: ${e.name} ${e.message || ''}`);
+        state.recorder = prevRecorder;
+        state.chunks = prevChunks;
+        state.recConfigIdx++;
+      }
+    }
+    return false;
+  }
+
+  // A take that fails right at the start: quietly carry on with the next format.
+  function tryNextRecorder(reason) {
+    if (!state.recording || state.recConfigIdx + 1 >= state.recConfigs.length) return false;
+    if (performance.now() - state.recConfigStartedAt > 15000) return false;
+    logRec(`${reason}: trying a more compatible format`);
+    const old = state.recorder;
+    state.recConfigIdx++;
+    if (!launchRecorder()) return false;
+    try { if (old && old.state !== 'inactive') old.stop(); } catch (e) { /* already stopped */ }
+    state.recStartedAt = performance.now();
+    recTime.textContent = '0:00';
+    toast('Switched to a more compatible recording format. Carry on!');
+    return true;
+  }
+
   function startRecording() {
     const stream = state.stream;
     if (!stream || !stream.getVideoTracks().length) {
       toast('The camera isn’t ready yet.');
       return;
     }
-    const mimeType = pickMimeType();
-    if (mimeType === null) {
+    if (!window.MediaRecorder) {
       toast('Recording isn’t supported in this browser. Please update it, or try Safari, Chrome or Edge.', 5000);
       return;
     }
 
-    const s = stream.getVideoTracks()[0].getSettings();
-    const long = Math.max(video.videoWidth, video.videoHeight, s.width || 0, s.height || 0);
-    const options = {
-      // Sized so a 20-minute take stays manageable (the whole clip is held in memory
-      // until saved): 4K ≈ 2.4 GB, 1080p ≈ 1.8 GB, 720p ≈ 1.2 GB per 20 minutes.
-      videoBitsPerSecond: long >= 3000 ? 16000000 : long >= 1900 ? 12000000 : 8000000,
-      audioBitsPerSecond: 256000
-    };
-    if (mimeType) options.mimeType = mimeType;
-
     recLog.length = 0;
     recLogStart = performance.now();
-    const ua = navigator.userAgent.match(/OS [\d_]+/);
-    logRec(`${ua ? ua[0].replace(/_/g, '.') : 'browser'}${navigator.standalone ? ' (Home Screen)' : ''}`);
+    const ua = navigator.userAgent.match(/(iPhone OS|Mac OS X|Windows NT|CrOS|Chrome|Edg|Firefox|Version)[\/ ][\d_.]+/g);
+    logRec(`${ua ? ua.join(', ').replace(/_/g, '.') : 'browser'}${navigator.standalone ? ' (Home Screen)' : ''}`);
     logRec(`stream ${stream.getVideoTracks().length}v ${stream.getAudioTracks().length}a, ${captureInfo.textContent}`);
-    logRec(`try ${mimeType || 'default'} @ ${options.videoBitsPerSecond / 1e6} Mbps`);
 
-    let rec;
-    try {
-      rec = new MediaRecorder(stream, options);
-    } catch (e) {
-      logRec(`create failed: ${e.name}; retrying without bitrates`);
-      try {
-        rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      } catch (e2) {
-        toast('Recording couldn’t start on this device.', 5000);
-        return;
-      }
-    }
-
-    state.recorder = rec;
-    state.mimeType = rec.mimeType || mimeType || 'video/mp4';
-    state.chunks = [];
-
-    rec.addEventListener('dataavailable', (e) => {
-      logRec(`data ${e.data ? e.data.size : 0} bytes`);
-      if (state.recorder === rec && e.data && e.data.size) state.chunks.push(e.data);
-    });
-    rec.addEventListener('stop', () => { logRec('stop event'); onRecorderStop(rec); });
-    rec.addEventListener('error', (e) => {
-      const err = e.error || {};
-      logRec(`error ${err.name || ''} ${err.message || ''}`);
-      toast(`Recording error: ${err.name || 'unknown'}`, 5000);
-    });
-    rec.addEventListener('start', () => {
-      logRec(`start event, mimeType ${rec.mimeType || '(none)'}`);
-      if (rec.mimeType) state.mimeType = rec.mimeType;
-      updateCaptureInfo();
-      state.recStartedAt = performance.now();
-      setPlaying(true);   // scroll starts as the recording starts
-    });
-
-    logRec(`created, state ${rec.state}`);
-    try {
-      // Safari: one complete MP4, written when stopped (pieces can make iOS players
-      // stop after a few seconds). Elsewhere: 1-second pieces, so nothing is lost.
-      if (IS_SAFARI) rec.start(); else rec.start(1000);
-      logRec(`start() called, state ${rec.state}`);
-    } catch (e) {
-      logRec(`start() failed: ${e.name} ${e.message}`);
-      toast('Recording couldn’t start on this device.', 5000);
-      state.recorder = null;
+    state.recConfigs = recorderConfigs(stream);
+    state.recConfigIdx = 0;
+    state.recording = true;   // set first, so an instant failure can fall back
+    if (!launchRecorder()) {
+      state.recording = false;
+      showCameraMessage('Recording failed',
+        'This browser wouldn’t start recording. Please try again, or try another browser. If it keeps happening, take a screenshot of this message.\n\n' +
+        recLog.join('\n'), true);
       return;
     }
 
-    state.recording = true;
     state.recStartDate = new Date();
     state.recStartedAt = performance.now();
     recordBtn.classList.add('is-recording');
@@ -937,6 +1004,8 @@
 
   function onRecorderStop(rec) {
     if (!rec || state.recorder !== rec) return;   // already finished, or an old recorder
+    // Stopped by itself just after starting: carry on with a more compatible format.
+    if (state.recording && tryNextRecorder('recorder stopped by itself')) return;
     clearTimeout(state.finishTimer);
     state.recorder = null;
     if (state.recording) endRecordingUI(); // stopped by the system (e.g. camera interrupted)
@@ -950,6 +1019,8 @@
         recLog.join('\n'), true);
       return;
     }
+    const cfg = state.recConfigs && state.recConfigs[state.recConfigIdx];
+    if (cfg) store.set(KEYS.recorder, cfg.key);   // remember what works on this device
     const type = (state.mimeType || 'video/mp4').split(';')[0];
     const blob = new Blob(chunks, { type });
     showPreview(blob, type);
