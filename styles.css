@@ -465,3 +465,63 @@ input[type="range"]::-moz-range-thumb { width: 30px; height: 30px; border: 0; bo
   z-index: 20;
   pointer-events: none;
 }
+
+/* ---------- Camera / microphone chooser ---------- */
+
+.sheet {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 8;
+}
+.sheet-card {
+  width: 100%;
+  max-width: 480px;
+  max-height: 75%;
+  overflow: auto;
+  padding: 18px 16px calc(var(--safe-b) + 16px);
+  border-radius: 20px 20px 0 0;
+  background: var(--panel);
+}
+@media (min-width: 600px) {
+  .sheet { align-items: center; }
+  .sheet-card { border-radius: 20px; padding-bottom: 16px; }
+}
+.sheet-card h2 { margin: 4px 4px 8px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.choice-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 16px;
+  text-align: left;
+}
+.choice[aria-checked="true"] { border-color: var(--primary); }
+.choice[aria-checked="true"]::after { content: "✓"; color: var(--primary); font-weight: 700; }
+.choice:disabled { opacity: 0.5; }
+.sheet-card .btn { width: 100%; }
+
+/* ---------- Laptop / desktop ---------- */
+
+.topbar-right { display: flex; gap: 8px; }
+.desktop-only { display: none; }
+.key-hint { margin: 6px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
+
+@media (hover: hover) and (pointer: fine) {
+  .desktop-only { display: block; }
+  .screen-script {
+    padding-left: max(16px, calc((100% - 900px) / 2));
+    padding-right: max(16px, calc((100% - 900px) / 2));
+  }
+  .script-text { max-width: 900px; }
+  button:hover { filter: brightness(1.15); }
+}

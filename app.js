@@ -24,8 +24,16 @@
     script: 'tp.script',
     size: 'tp.fontSize',
     speed: 'tp.speed',
-    countdown: 'tp.countdown'
+    countdown: 'tp.countdown',
+    camera: 'tp.cameraId',
+    mic: 'tp.micId'
   };
+
+  const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IS_DESKTOP = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  // Safari writes the most reliable MP4 in one go; other browsers are happy with 1-second pieces.
+  const IS_SAFARI = /^((?!chrome|chromium|crios|fxios|android|edg).)*safari/i.test(navigator.userAgent);
 
   const READING_POS = 1 / 3;    // reading line, fraction of screen height
   const LINE_HEIGHT = 1.3;      // must match .script-text line-height
@@ -115,6 +123,8 @@
     stream: null,
     facing: 'user',
     mirror: true,
+    cameraId: store.get(KEYS.camera, ''),
+    micId: store.get(KEYS.mic, ''),
     cameraReq: 0,
     // scrolling
     playing: false,
@@ -360,7 +370,7 @@
   let drag = null;
 
   stage.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.chrome, .camera-msg')) return;
+    if (e.target.closest('.chrome, .camera-msg, .sheet')) return;
     drag = {
       id: e.pointerId,
       y: e.clientY,
@@ -420,10 +430,17 @@
     channelCount: { ideal: 2 }   // stereo if the microphone offers it
   };
 
-  function initialVideoConstraints(facing) {
-    return facing === 'environment'
-      ? { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } }
-      : { facingMode: { ideal: 'user' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+  function videoConstraints(useIds) {
+    const c = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+    if (useIds && state.cameraId) c.deviceId = { exact: state.cameraId };
+    else c.facingMode = { ideal: state.facing };
+    return c;
+  }
+
+  function audioConstraints(useIds) {
+    const c = Object.assign({}, AUDIO_CONSTRAINTS);
+    if (useIds && state.micId) c.deviceId = { exact: state.micId };
+    return c;
   }
 
   function stopStream() {
@@ -437,27 +454,33 @@
 
   // Note: getUserMedia is called before the first `await`, so when this runs
   // from a tap handler it is still inside the user gesture.
-  async function openCamera(facing) {
+  async function openCamera() {
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: initialVideoConstraints(facing),
-        audio: AUDIO_CONSTRAINTS
-      });
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(true), audio: audioConstraints(true) });
     } catch (err) {
-      if (err && (err.name === 'OverconstrainedError' || err.name === 'TypeError')) {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: true });
+      const name = err && err.name;
+      if (name !== 'OverconstrainedError' && name !== 'NotFoundError' && name !== 'TypeError') throw err;
+      // A remembered camera or microphone has gone (e.g. unplugged): forget it and use the default.
+      if (state.cameraId || state.micId) {
+        state.cameraId = ''; state.micId = '';
+        store.set(KEYS.camera, ''); store.set(KEYS.mic, '');
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(false), audio: audioConstraints(false) });
+        } catch (e2) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        }
       } else {
-        throw err;
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       }
     }
     const track = stream.getVideoTracks()[0];
-    if (track) await improveVideo(track, facing);
+    if (track) await improveVideo(track);
     return stream;
   }
 
   // Step up to the best mode the camera actually supports, without a new permission prompt.
-  async function improveVideo(track, facing) {
+  async function improveVideo(track) {
     if (!track.applyConstraints) return;
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     const capLong = Math.max((caps.width && caps.width.max) || 0, (caps.height && caps.height.max) || 0);
@@ -506,16 +529,15 @@
 
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       showCameraMessage('Camera not available',
-        'This browser can’t use the camera here. Open the app over https in Safari (or from your Home Screen) on iOS 14.3 or later.', false);
+        'This browser can’t use the camera here. Use an up-to-date Safari, Chrome or Edge, and open the app over https.', false);
       return;
     }
 
     stopStream();
     const req = state.cameraReq;
-    const facing = state.facing;
     updateCameraButtons();
     try {
-      const stream = await openCamera(facing);
+      const stream = await openCamera();
       if (req !== state.cameraReq || state.screen !== 'record') {
         stream.getTracks().forEach((t) => t.stop()); // user left or switched meanwhile
         return;
@@ -537,8 +559,16 @@
     const p = video.play();
     if (p && p.catch) p.catch(() => { /* will start on the next tap */ });
 
+    // Which way does this camera face? (Laptop webcams usually don't say: treat as facing you.)
+    const vt = stream.getVideoTracks()[0];
+    if (vt) {
+      const vs = vt.getSettings();
+      if (vs.facingMode) state.facing = vs.facingMode === 'environment' ? 'environment' : 'user';
+      else state.facing = /back|rear|environment/i.test(vt.label) ? 'environment' : 'user';
+    }
     state.mirror = state.facing === 'user';
     applyMirror();
+    refreshDeviceLists();
 
     stream.getTracks().forEach((t) => {
       t.addEventListener('ended', () => {
@@ -580,8 +610,10 @@
   function codecLabel(type) {
     if (!type) return 'default';
     if (/hvc1|hev1/i.test(type)) return 'HEVC';
+    if (/vp9|vp09/i.test(type)) return 'VP9';
+    if (/vp8/i.test(type)) return 'VP8';
+    if (/av01/i.test(type)) return 'AV1';
     if (/avc1|mp4/i.test(type)) return 'H.264';
-    if (/vp9/i.test(type)) return 'VP9';
     return type.split(';')[0];
   }
 
@@ -595,11 +627,82 @@
     applyMirror();
   });
 
-  flipBtn.addEventListener('click', () => {
+  // ---------------------------------------------------------------- camera / microphone chooser
+
+  const deviceSheet = $('device-sheet');
+  let devices = { video: [], audio: [] };
+
+  function cleanLabel(label, fallback) {
+    // e.g. "FaceTime HD Camera (Built-in) (05ac:8514)" → "FaceTime HD Camera (Built-in)"
+    return (label || '').replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, '').trim() || fallback;
+  }
+
+  async function refreshDeviceLists() {
+    if (!navigator.mediaDevices.enumerateDevices) return;
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      devices = {
+        video: all.filter((d) => d.kind === 'videoinput'),
+        audio: all.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'communications')
+      };
+    } catch (e) { /* leave lists as they were */ }
+    renderDeviceLists();
+  }
+
+  function currentId(kind) {
+    const t = state.stream && (kind === 'video' ? state.stream.getVideoTracks()[0] : state.stream.getAudioTracks()[0]);
+    return (t && t.getSettings().deviceId) || (kind === 'video' ? state.cameraId : state.micId);
+  }
+
+  function renderDeviceLists() {
+    [['video', $('camera-list'), 'Camera'], ['audio', $('mic-list'), 'Microphone']].forEach(([kind, list, word]) => {
+      list.textContent = '';
+      const cur = currentId(kind);
+      const items = devices[kind];
+      if (!items.length) {
+        const p = document.createElement('p');
+        p.className = 'slider-label';
+        p.textContent = `No ${word.toLowerCase()} found.`;
+        list.appendChild(p);
+        return;
+      }
+      items.forEach((d, i) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'choice';
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', String(d.deviceId === cur));
+        b.textContent = d.deviceId === 'default'
+          ? `System default${d.label ? ` (${cleanLabel(d.label.replace(/^Default\s*-\s*/i, ''), '')})` : ''}`
+          : cleanLabel(d.label, `${word} ${i + 1}`);
+        b.addEventListener('click', () => chooseDevice(kind, d.deviceId));
+        list.appendChild(b);
+      });
+    });
+  }
+
+  function chooseDevice(kind, id) {
     if (state.recording || state.countingDown) return;
-    state.facing = state.facing === 'user' ? 'environment' : 'user';
-    startCamera();
-  });
+    if (kind === 'video') { state.cameraId = id; store.set(KEYS.camera, id); }
+    else { state.micId = id; store.set(KEYS.mic, id); }
+    startCamera(); // called from the tap, so iOS allows it
+  }
+
+  function openDeviceSheet() {
+    if (state.recording || state.countingDown) return;
+    renderDeviceLists();
+    refreshDeviceLists();
+    deviceSheet.hidden = false;
+  }
+
+  function closeDeviceSheet() { deviceSheet.hidden = true; showControls(); }
+
+  flipBtn.addEventListener('click', openDeviceSheet);
+  $('sheet-done').addEventListener('click', closeDeviceSheet);
+  deviceSheet.addEventListener('click', (e) => { if (e.target === deviceSheet) closeDeviceSheet(); });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => { if (state.stream) refreshDeviceLists(); });
+  }
 
   function updateCameraButtons() {
     const busy = state.recording || state.countingDown;
@@ -611,12 +714,19 @@
     const name = (err && err.name) || '';
     const where = 'Settings > Safari > Camera and Settings > Safari > Microphone' +
       ' (on iOS 18 and later: Settings > Apps > Safari)';
-    if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') {
+    if ((name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') && IS_IOS) {
       showCameraMessage('Camera or microphone blocked',
         'Teleprompter needs your camera and microphone to record.\n\n' +
         `To allow them, go to ${where} and choose “Ask” or “Allow”.\n\n` +
         'In Safari you can also tap “aA” in the address bar > Website Settings.\n\n' +
         'Then come back here and tap Try again.', true);
+    } else if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'PermissionDeniedError') {
+      showCameraMessage('Camera or microphone blocked',
+        'Teleprompter needs your camera and microphone to record.\n\n' +
+        'Click the camera or padlock icon in the address bar and allow the camera and microphone for this site.\n\n' +
+        'On a Mac, also check System Settings > Privacy & Security > Camera and Microphone, and make sure your browser is switched on. ' +
+        'On Windows, check Settings > Privacy & security > Camera and Microphone.\n\n' +
+        'Then click Try again.', true);
     } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
       showCameraMessage('No camera found', 'No camera or microphone could be found on this device.', true);
     } else if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
@@ -649,8 +759,9 @@
     const types = [
       'video/mp4;codecs=avc1,mp4a.40.2',   // H.264 video + AAC audio, stated explicitly
       'video/mp4;codecs=avc1',
+      'video/mp4;codecs=avc1,opus',        // Chrome on some laptops
       'video/mp4',
-      'video/webm;codecs=vp9,opus',   // desktop fallbacks, for testing only
+      'video/webm;codecs=vp9,opus',        // e.g. Firefox
       'video/webm'
     ];
     if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
@@ -714,15 +825,16 @@
     }
     const mimeType = pickMimeType();
     if (mimeType === null) {
-      toast('Recording isn’t supported in this browser. Please update iOS.', 5000);
+      toast('Recording isn’t supported in this browser. Please update it, or try Safari, Chrome or Edge.', 5000);
       return;
     }
 
     const s = stream.getVideoTracks()[0].getSettings();
     const long = Math.max(video.videoWidth, video.videoHeight, s.width || 0, s.height || 0);
     const options = {
-      // Close to the iPhone Camera app's own H.264 rates (about 45 Mbps 4K, 17 Mbps 1080p).
-      videoBitsPerSecond: long >= 3000 ? 45000000 : 17000000,
+      // Sized so a 20-minute take stays manageable (the whole clip is held in memory
+      // until saved): 4K ≈ 2.4 GB, 1080p ≈ 1.8 GB, 720p ≈ 1.2 GB per 20 minutes.
+      videoBitsPerSecond: long >= 3000 ? 16000000 : long >= 1900 ? 12000000 : 8000000,
       audioBitsPerSecond: 256000
     };
     if (mimeType) options.mimeType = mimeType;
@@ -763,15 +875,17 @@
     });
     rec.addEventListener('start', () => {
       logRec(`start event, mimeType ${rec.mimeType || '(none)'}`);
+      if (rec.mimeType) state.mimeType = rec.mimeType;
+      updateCaptureInfo();
       state.recStartedAt = performance.now();
       setPlaying(true);   // scroll starts as the recording starts
     });
 
     logRec(`created, state ${rec.state}`);
     try {
-      // Collect the video in 1-second pieces, so the clip survives even if
-      // iOS never delivers the final 'stop' event (e.g. after backgrounding).
-      rec.start(1000);
+      // Safari: one complete MP4, written when stopped (pieces can make iOS players
+      // stop after a few seconds). Elsewhere: 1-second pieces, so nothing is lost.
+      if (IS_SAFARI) rec.start(); else rec.start(1000);
       logRec(`start() called, state ${rec.state}`);
     } catch (e) {
       logRec(`start() failed: ${e.name} ${e.message}`);
@@ -870,14 +984,16 @@
     clipInfo.textContent = `${name} · ${formatDuration(state.recElapsed)} · ` +
       `${mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`}`;
 
-    const canShareFiles = !!(navigator.canShare && navigator.share && navigator.canShare({ files: [state.clipFile] }));
+    // Phones: share sheet → Save Video. Laptops: a plain download is what you want.
+    const canShareFiles = !IS_DESKTOP &&
+      !!(navigator.canShare && navigator.share && navigator.canShare({ files: [state.clipFile] }));
     saveBtn.hidden = !canShareFiles;
     downloadLink.href = state.clipUrl;
     downloadLink.download = name;
     downloadLink.hidden = canShareFiles;
     shareStatus.textContent = canShareFiles
       ? 'Tap Save to Photos, then choose “Save Video”.'
-      : 'Sharing isn’t available here, so download the video instead.';
+      : (IS_DESKTOP ? 'The video will go to your Downloads folder.' : 'Sharing isn’t available here, so download the video instead.');
 
     showScreen('preview');
   }
@@ -885,6 +1001,10 @@
   clipVideo.addEventListener('loadedmetadata', () => {
     if (clipVideo.videoWidth) {
       clipInfo.textContent += ` · ${clipVideo.videoWidth}×${clipVideo.videoHeight}`;
+    }
+    const d = clipVideo.duration;
+    if (isFinite(d) && d > 0 && Math.abs(d * 1000 - state.recElapsed) > 3000) {
+      logRec(`clip plays ${d.toFixed(1)} s but recorded ${(state.recElapsed / 1000).toFixed(1)} s`);
     }
   }, false);
 
@@ -948,6 +1068,9 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       // iOS suspends the camera in the background: finish the clip so it isn't lost.
+      // Laptops keep recording happily (Chrome reports "hidden" when the window is
+      // merely covered or minimised), so leave those alone.
+      if (!IS_IOS) { logRec('page hidden, still recording'); return; }
       if (state.recording) stopRecording();
       cancelCountdown();
       setPlaying(false);
@@ -964,6 +1087,55 @@
       }
     }
   });
+
+  // ================================================================ LAPTOP: KEYBOARD, MOUSE, FULL SCREEN
+
+  document.addEventListener('keydown', (e) => {
+    if (state.screen !== 'record' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!deviceSheet.hidden) { if (e.key === 'Escape') closeDeviceSheet(); return; }
+    const onSlider = e.target && e.target.type === 'range';
+    let handled = true;
+    switch (e.key) {
+      case ' ': togglePlay(); break;
+      case 'r': case 'R': recordBtn.click(); break;
+      case 'ArrowUp': if (onSlider) return; nudgeSpeed(e.shiftKey ? 5 : 1); break;
+      case 'ArrowDown': if (onSlider) return; nudgeSpeed(e.shiftKey ? -5 : -1); break;
+      case '+': case '=': nudgeSize(2); break;
+      case '-': case '_': nudgeSize(-2); break;
+      case 'Home': resetScroll(); break;
+      default: handled = false;
+    }
+    if (handled) { e.preventDefault(); showControls(); }
+  });
+
+  function nudgeSpeed(d) {
+    speedSlider.value = Math.min(100, Math.max(1, state.speedLevel + d));
+    speedSlider.dispatchEvent(new Event('input'));
+  }
+
+  function nudgeSize(d) {
+    sizeSlider.value = Math.min(96, Math.max(24, state.fontSize + d));
+    sizeSlider.dispatchEvent(new Event('input'));
+  }
+
+  // Moving the mouse shows the controls, like tapping does on a phone.
+  stage.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && !drag) showControls(); });
+
+  const fullscreenBtn = $('fullscreen-btn');
+  const root = document.documentElement;
+  if (document.fullscreenEnabled || document.webkitFullscreenEnabled) {
+    fullscreenBtn.hidden = false;
+    fullscreenBtn.addEventListener('click', () => {
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fsEl) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+    });
+    const fsLabel = () => {
+      fullscreenBtn.textContent = (document.fullscreenElement || document.webkitFullscreenElement) ? 'Exit full screen' : 'Full screen';
+    };
+    document.addEventListener('fullscreenchange', fsLabel);
+    document.addEventListener('webkitfullscreenchange', fsLabel);
+  }
 
   // ================================================================ SERVICE WORKER
 

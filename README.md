@@ -1,6 +1,6 @@
 # Teleprompter
 
-A teleprompter and camera recorder for iPhone, built as a Progressive Web App.
+A teleprompter and camera recorder for iPhone and laptops (Safari, Chrome, Edge), built as a Progressive Web App.
 Plain HTML, CSS and JavaScript with no build step.
 
 **Live app:** https://markadams88.github.io/Teleprompt-Recorder-/
@@ -10,13 +10,15 @@ Plain HTML, CSS and JavaScript with no build step.
 - Script screen with automatic saving (localStorage).
 - Full-screen recording screen: live camera preview, smooth `requestAnimationFrame` scrolling,
   reading line a third of the way down (near the front camera).
-- Text size, speed, play/pause, reset, front/back camera, mirror preview (preview only),
+- Text size, speed, play/pause, reset, camera and microphone chooser (remembered), mirror preview (preview only),
   optional 3-2-1 countdown. Controls hide after 3 seconds; tap to show them again.
   Tap the text to pause or play; drag the text to move it by hand.
 - Records the raw camera stream (no text in the video) as MP4/H.264 where supported,
-  at about the Camera app's own rates (45 Mbps for 4K, 17 Mbps for 1080p), with 256 kbps audio
+  at 16 Mbps for 4K, 12 Mbps for 1080p and 8 Mbps for 720p (sized for takes of up to 20 minutes), with 256 kbps audio
   and voice processing turned off. Tries 4K at 30 fps on either camera, then 1080p.
 - Shows the actual capture resolution and frame rate in the top-right corner.
+- On a laptop: keyboard shortcuts (Space play/pause, R record/stop, ↑ ↓ speed, + − text size, Home back to top),
+  a Full screen button, and recordings save straight to Downloads.
 - Save to Photos through the share sheet, with a download fallback.
 - Works offline once opened (service worker) and installs to the Home Screen.
 

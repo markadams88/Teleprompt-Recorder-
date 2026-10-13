@@ -74,7 +74,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
           Script
         </button>
-        <button id="countdown-btn" class="pill" type="button" aria-pressed="true">3-2-1: On</button>
+        <div class="topbar-right">
+          <button id="fullscreen-btn" class="pill" type="button" hidden>Full screen</button>
+          <button id="countdown-btn" class="pill" type="button" aria-pressed="true">3-2-1: On</button>
+        </div>
       </div>
 
       <div id="controls" class="controls chrome">
@@ -102,14 +105,26 @@
           <button id="record-btn" class="record-btn" type="button" aria-label="Start recording">
             <span class="record-inner"></span>
           </button>
-          <button id="flip-btn" class="ctl" type="button" aria-label="Switch between front and back camera">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9a8 8 0 0 1 14-3l2 2M20 4v4h-4M20 15a8 8 0 0 1-14 3l-2-2M4 20v-4h4"/></svg>
-            <span>Flip</span>
+          <button id="flip-btn" class="ctl" type="button" aria-label="Choose camera and microphone">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8a2 2 0 0 1 2-2h2l2-2h6l2 2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+            <span>Camera</span>
           </button>
           <button id="mirror-btn" class="ctl" type="button" aria-pressed="true" aria-label="Mirror preview">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M9 7L3 17h6zM15 7l6 10h-6z"/></svg>
             <span>Mirror</span>
           </button>
+        </div>
+        <p class="key-hint desktop-only">Space: play/pause · R: record/stop · ↑ ↓: speed · + −: text size</p>
+      </div>
+
+      <!-- Camera and microphone chooser -->
+      <div id="device-sheet" class="sheet" hidden>
+        <div class="sheet-card" role="dialog" aria-modal="true" aria-label="Choose camera and microphone">
+          <h2>Camera</h2>
+          <div id="camera-list" class="choice-list"></div>
+          <h2>Microphone</h2>
+          <div id="mic-list" class="choice-list"></div>
+          <button id="sheet-done" class="btn btn-primary" type="button">Done</button>
         </div>
       </div>
     </div>
