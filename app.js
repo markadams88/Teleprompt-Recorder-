@@ -163,6 +163,8 @@
   };
 
   function showScreen(name) {
+    // Don't leave keyboard focus on a button that is about to be hidden.
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     state.screen = name;
     Object.keys(screens).forEach((key) => { screens[key].hidden = key !== name; });
   }
@@ -216,6 +218,7 @@
   // ================================================================ 2. RECORDING SCREEN
 
   function enterRecording() {
+    if (state.recording || state.countingDown) { logRec('ignored re-entering the recording screen'); return; }
     const text = scriptInput.value.trim() ? scriptInput.value : '';
     textEl.textContent = text || 'Your script is empty. Go back and paste or type it on the Script screen.';
     textEl.classList.toggle('is-empty', !text);
@@ -236,7 +239,7 @@
     if (state.recording) return;
     cancelCountdown();
     setPlaying(false);
-    stopStream();
+    stopStream('left recording screen');
     releaseWakeLock();
     hideCameraMessage();
     showScreen('script');
@@ -447,8 +450,12 @@
     return c;
   }
 
-  function stopStream() {
+  function stopStream(reason) {
     state.cameraReq++; // invalidates any camera request still in flight
+    if (state.stream && state.recording) {
+      const where = ((new Error().stack || '').split('\n')[2] || '').trim();
+      logRec(`camera released while recording: ${reason || 'unknown'} ${where}`);
+    }
     if (state.stream) {
       state.stream.getTracks().forEach((t) => t.stop());
       state.stream = null;
@@ -527,7 +534,11 @@
     return long >= w * 0.95 && (s.frameRate || 0) >= fps - 1;
   }
 
-  async function startCamera() {
+  async function startCamera(e) {
+    if (state.recording || state.countingDown) {
+      logRec(`ignored a camera restart during recording (${e && e.type ? e.type + ' on ' + (e.target && e.target.id || e.target && e.target.className || '?') : 'code'})`);
+      return;
+    }
     hideCameraMessage();
     captureInfo.textContent = 'Starting camera…';
 
@@ -537,7 +548,7 @@
       return;
     }
 
-    stopStream();
+    stopStream('camera (re)start');
     const req = state.cameraReq;
     updateCameraButtons();
     try {
@@ -575,9 +586,10 @@
     refreshDeviceLists();
 
     stream.getTracks().forEach((t) => {
+      ['mute', 'unmute'].forEach((ev) => t.addEventListener(ev, () => { if (state.recording) logRec(`${t.kind} track ${ev}`); }));
       t.addEventListener('ended', () => {
+        if (state.recording) logRec(`${t.kind} track ended (stream current: ${state.stream === stream})`);
         if (state.stream !== stream || state.screen !== 'record') return;
-        logRec(`${t.kind} track ended`);
         if (state.recording) stopRecording();
         showCameraMessage('Camera stopped',
           'The camera or microphone was interrupted (perhaps by a call or another app). Tap below to start it again.', true);
@@ -838,14 +850,12 @@
 
     const mp4 = pickMimeType();
     // 192 kbps is the highest AAC rate every platform encoder accepts (Windows tops out there).
+    const webm = IS_SAFARI ? '' : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(supported);
+    if (mp4) add({ mimeType: mp4, videoBitsPerSecond: vbps, audioBitsPerSecond: 192000 });
+    if (webm) add({ mimeType: webm, videoBitsPerSecond: vbps, audioBitsPerSecond: 128000 });
     if (mp4) {
-      add({ mimeType: mp4, videoBitsPerSecond: vbps, audioBitsPerSecond: 192000 });
       add({ mimeType: mp4, videoBitsPerSecond: vbps, audioBitsPerSecond: 128000 });
       add({ mimeType: mp4, videoBitsPerSecond: vbps });   // audio at the encoder's own default
-    }
-    if (!IS_SAFARI) {
-      const webm = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(supported);
-      if (webm) add({ mimeType: webm, videoBitsPerSecond: vbps, audioBitsPerSecond: 128000 });
     }
     if (mp4) add({ mimeType: mp4 });
     add({});   // whatever the browser likes
@@ -920,11 +930,41 @@
   }
 
   // A take that fails right at the start: quietly carry on with the next format.
+  function streamUsable() {
+    return !!(state.stream && state.stream.getVideoTracks().some((t) => t.readyState === 'live'));
+  }
+
   function tryNextRecorder(reason) {
-    if (!state.recording || state.recConfigIdx + 1 >= state.recConfigs.length) return false;
+    if (!state.recording) return false;
+    if (streamUsable() && state.recConfigIdx + 1 >= state.recConfigs.length) return false;
     if (performance.now() - state.recConfigStartedAt > 15000) return false;
     logRec(`${reason}: trying a more compatible format`);
     const old = state.recorder;
+    if (!streamUsable()) {
+      // The camera went away underneath us: reconnect it, then carry on recording.
+      logRec('camera not live; reconnecting');
+      state.recorder = null;
+      captureInfo.textContent = 'Reconnecting camera…';
+      if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+      const req = ++state.cameraReq;
+      openCamera().then((stream) => {
+        if (req !== state.cameraReq || !state.recording) { stream.getTracks().forEach((t) => t.stop()); return; }
+        attachStream(stream);
+        if (launchRecorder()) {
+          state.recStartedAt = performance.now();
+          recTime.textContent = '0:00';
+          toast('The camera reconnected. Carry on!');
+        } else {
+          endRecordingUI();
+          showCameraMessage('Recording failed', 'This browser wouldn’t start recording. Please take a screenshot of this message.\n\n' + recLog.join('\n'), true);
+        }
+      }).catch((err) => {
+        logRec(`reconnect failed: ${err && err.name}`);
+        endRecordingUI();
+        showCameraError(err);
+      });
+      return true;   // same format again: the camera was the problem, not the format
+    }
     state.recConfigIdx++;
     if (!launchRecorder()) return false;
     try { if (old && old.state !== 'inactive') old.stop(); } catch (e) { /* already stopped */ }
@@ -1038,7 +1078,7 @@
   function showPreview(blob, type) {
     // Release the camera and microphone: saves battery, and stops iOS routing
     // playback to the quiet earpiece while the mic is open.
-    stopStream();
+    stopStream('showing the clip');
     cancelCountdown();
     releaseWakeLock();
     hideCameraMessage();
@@ -1207,6 +1247,12 @@
     document.addEventListener('fullscreenchange', fsLabel);
     document.addEventListener('webkitfullscreenchange', fsLabel);
   }
+
+  // Any unexpected script error during a take goes into the troubleshooting report.
+  window.addEventListener('error', (e) => { if (state.recording) logRec(`script error: ${e.message} (line ${e.lineno})`); });
+  window.addEventListener('unhandledrejection', (e) => {
+    if (state.recording) logRec(`script error: ${(e.reason && (e.reason.message || e.reason.name)) || e.reason}`);
+  });
 
   // ================================================================ SERVICE WORKER
 
